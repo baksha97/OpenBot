@@ -55,6 +55,7 @@ COPY tsconfig.base.json bunfig.toml ./
 COPY app/package.json app/package.json
 COPY server/package.json server/package.json
 COPY worker/package.json worker/package.json
+COPY packages/durable-core/package.json packages/durable-core/package.json
 RUN bun install --frozen-lockfile
 
 # The lockfile travels with the manifest, because `--frozen-lockfile` with no lockfile in the context
@@ -68,10 +69,11 @@ RUN cd agent-computer && bun install --frozen-lockfile
 # A second tree with the build-time dependencies left out, for the runtime stage to take. Vite,
 # biome and the test tooling are a gigabyte that nothing in a running container imports.
 RUN mkdir -p /prod && cp package.json bun.lock /prod/ \
-  && cd /prod && mkdir -p app server worker \
+  && cd /prod && mkdir -p app server worker packages/durable-core \
   && cp /src/app/package.json app/package.json \
   && cp /src/server/package.json server/package.json \
   && cp /src/worker/package.json worker/package.json \
+  && cp /src/packages/durable-core/package.json packages/durable-core/package.json \
   && bun install --frozen-lockfile --production
 
 
@@ -83,6 +85,7 @@ COPY shared shared
 # The server's source as well: the app's prebuild step reads the tenant package through
 # `server/src/tenant-package`, so the app cannot be built without it.
 COPY server server
+COPY packages/durable-core packages/durable-core
 COPY examples examples
 RUN bun run --cwd app build
 
@@ -121,6 +124,7 @@ WORKDIR /app
 # present and broken.
 COPY --from=deps /prod/node_modules node_modules
 COPY --from=deps /prod/server/node_modules server/node_modules
+COPY --from=deps /prod/packages/durable-core/node_modules packages/durable-core/node_modules
 COPY --from=deps /src/package.json package.json
 COPY --from=deps /src/bun.lock bun.lock
 # The browser's tree is a separate install root with its own lockfile rather than a workspace of the
@@ -129,6 +133,7 @@ COPY --from=deps /src/bun.lock bun.lock
 COPY --from=deps /src/agent-computer/node_modules agent-computer/node_modules
 
 COPY server server
+COPY packages/durable-core packages/durable-core
 COPY shared shared
 COPY examples examples
 COPY agent-computer/src agent-computer/src
@@ -232,7 +237,12 @@ ENV AGENT_COMPUTER_URL=http://127.0.0.1:4100
 # The two directories the browser writes are its workspace and its profile, the second being what
 # keeps a Bot signed in between turns. Owned here, because a non-root process cannot create them at
 # the root of the filesystem and the failure surfaces as EACCES on the first navigation.
+# Public application sources must also be readable by apiuser when COPY preserves a restrictive
+# checkout umask; ownership by pwuser alone does not make 0600 files readable by the API.
 RUN mkdir -p /workspace /profiles \
+  && chmod -R a+rX /app/server /app/packages /app/shared /app/examples \
+      /app/agent-computer/src /app/agent-computer/package.json /app/scripts \
+      /app/package.json /app/bun.lock \
   && chown -R pwuser:pwuser /workspace /profiles /app
 
 # Where the embedded database answers, when there is one. Overridden by whatever you set, so an

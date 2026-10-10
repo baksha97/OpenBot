@@ -50,12 +50,15 @@ export function createThreadRoutes(
    * `POST /mint` needs no reader and is unaffected either way.
    */
   readThread?: ThreadReader,
+  persistMint?: (threadId: string, userId: string) => Promise<void>,
 ) {
   const routes = new Hono<{ Variables: AppVariables }>();
 
-  routes.post("/mint", requireUser, (context) =>
-    context.json({ threadId: identity.mint() }),
-  );
+  routes.post("/mint", requireUser, async (context) => {
+    const threadId = identity.mint();
+    await persistMint?.(threadId, context.var.actor.id);
+    return context.json({ threadId });
+  });
 
   if (readThread) {
     /*

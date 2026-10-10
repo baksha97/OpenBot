@@ -1,3 +1,9 @@
+import {
+  intelligenceLocks,
+  intelligenceRunnerConnection,
+} from "./intelligence-compat";
+import { Hono } from "hono";
+import type { LocalThreads } from "./local-threads";
 import type { BaseEvent, Message, RunAgentInput } from "@ag-ui/client";
 import { AbstractAgent, HttpAgent } from "@ag-ui/client";
 import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
@@ -64,17 +70,15 @@ import { grantedToolGuidance, parametersFor } from "./plugins/tools";
 import { UNTRUSTED_GUIDANCE } from "./untrusted-content";
 
 /**
- * The CopilotKit runtime, always in Intelligence mode.
+ * The CopilotKit runtime with an explicitly selected thread backend.
  *
  * Package-declared built-in Bots run as CopilotKit `BuiltInAgent` instances. External Bots are
  * reached over AG-UI as `HttpAgent` instances, so anything that speaks the protocol remains a Bot
  * with no framework adapter here: LangGraph, Pydantic-AI, CrewAI, Mastra, ADK, or a hand-written
  * server.
  *
- * There is no SSE branch. Intelligence is a requirement of the product, not a tier: it owns
- * durable threads, memory and learning, and a deployment without it silently forgets every
- * conversation. config.ts refuses to boot without the full contract, so by the time this runs the
- * settings are present and this file has one mode.
+ * Intelligence remains the default. Local mode uses the application's scoped durable service
+ * and pull-based SSE adapter; it never constructs an Intelligence client or silently falls back.
  */
 
 /** Resolve the signed-in person for a request. Threads and memory are scoped to whoever this returns. */
@@ -2044,6 +2048,7 @@ export function mountCopilotRuntime(
     basePath?: string;
     onRunBusy?: (input: { threadId: string; busy: boolean }) => void;
     learningSettings?: LearningSettingsStore;
+    localThreads?: LocalThreads;
   } = {},
 ) {
   const { intelligence } = config.runtime;
@@ -2081,6 +2086,71 @@ export function mountCopilotRuntime(
       throw error;
     }
   };
+
+  if (config.runtime.mode === "local") {
+    const backend = options.localThreads;
+    if (!backend) throw new Error("Local threads backend is not configured");
+    const handler = new Hono();
+    handler.all(`${basePath}/*`, async (context) => {
+      const request = context.req.raw;
+      const actor = await identifyActor(request);
+      const scope = backend.scope(actor.id);
+      const response = await backend.http(scope, request, basePath);
+      if (response) return response;
+      const cursor = request.headers.get("Last-Event-ID");
+      const streaming = /\/agent\/[^/]+\/(run|connect)$/.test(
+        new URL(request.url).pathname,
+      );
+      const runner = backend.runner(
+        scope,
+        cursor === null ? undefined : Number(cursor),
+        streaming,
+      );
+      const runtime = new CopilotRuntime({
+        runner,
+        agents: createRequestAgents(identifyActor, resolver) as never,
+        ...(config.generativeUi ? { openGenerativeUI: true } : {}),
+        a2ui: { enabled: config.generativeUi },
+      });
+      const result = await createCopilotHonoHandler({
+        runtime,
+        basePath,
+      }).fetch(request);
+      if (!streaming || result.status >= 400) return result;
+      void result.body?.cancel().catch(() => {});
+      return runner.response(request.signal);
+    });
+    return {
+      handler,
+      learning: undefined,
+      agentFor,
+      runnerConnection: () => {
+        throw new Error("Local threads have no Intelligence runner connection");
+      },
+      runnerFor: (actorId: string) => backend.runner(backend.scope(actorId)),
+      threadLock: {
+        acquire: async (input: {
+          threadId: string;
+          runId: string;
+          userId: string;
+          agentId: string;
+        }) => {
+          await backend.ensure(
+            backend.scope(input.userId),
+            input.threadId,
+            input.agentId,
+          );
+          return { runId: input.runId };
+        },
+        renew: async (_input: { threadId: string; runId: string }) => {},
+        release: async (_input: { threadId: string; runId: string }) => {},
+      },
+      history: async (input: { threadId: string; actorId: string }) =>
+        (await backend.history(backend.scope(input.actorId), input.threadId))
+          .messages,
+    };
+  }
+  if (!intelligence) throw new Error("Intelligence backend is not configured");
 
   /*
    * One client, used by the runtime and by anything reading a thread beside it, so a hop reads the
@@ -2160,6 +2230,7 @@ export function mountCopilotRuntime(
   });
 
   return {
+    runnerFor: (_actorId: string) => undefined,
     handler: createCopilotHonoHandler({ runtime, basePath }),
     learning,
     /**
@@ -2171,10 +2242,7 @@ export function mountCopilotRuntime(
      * the token that holds it is not the API key. The runtime asks the client for both, so anything
      * else driving a run has to ask the same client the same way.
      */
-    runnerConnection: () => ({
-      url: intelligenceClient.ɵgetRunnerWsUrl(),
-      authToken: intelligenceClient.ɵgetRunnerAuthToken(),
-    }),
+    runnerConnection: () => intelligenceRunnerConnection(intelligenceClient),
     /**
      * The conversation's run lock, as the platform issues it.
      *
@@ -2199,7 +2267,7 @@ export function mountCopilotRuntime(
             ...input,
             ...(learningContainerId ? { learningContainerId } : {}),
           });
-          const held = await intelligenceClient.ɵacquireThreadLock({
+          const held = await intelligenceLocks(intelligenceClient).acquire({
             ...input,
             ...(learningContainerId ? { learningContainerId } : {}),
           });
@@ -2238,7 +2306,7 @@ export function mountCopilotRuntime(
         }
       },
       renew: async (input: { threadId: string; runId: string }) => {
-        await intelligenceClient.ɵrenewThreadLock({
+        await intelligenceLocks(intelligenceClient).renew({
           ...input,
           ttlSeconds: THREAD_LOCK_TTL_SECONDS,
         });
@@ -2249,7 +2317,7 @@ export function mountCopilotRuntime(
         try {
           onRunBusy?.({ threadId: input.threadId, busy: false });
         } catch {}
-        await intelligenceClient.ɵcleanupThreadLock(input);
+        await intelligenceLocks(intelligenceClient).release(input);
       },
     },
     agentFor,

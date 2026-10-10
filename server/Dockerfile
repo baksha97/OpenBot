@@ -19,6 +19,7 @@ COPY bunfig.toml bunfig.toml
 COPY app/package.json app/package.json
 COPY server/package.json server/package.json
 COPY worker/package.json worker/package.json
+COPY packages/durable-core/package.json packages/durable-core/package.json
 RUN bun install --frozen-lockfile
 
 
@@ -32,6 +33,7 @@ COPY shared shared
 # The server's source too: `generate-app-config` reads the tenant package through
 # `server/src/tenant-package`, so the app cannot be built without it.
 COPY server server
+COPY packages/durable-core packages/durable-core
 COPY examples examples
 RUN bun run --cwd app build
 
@@ -49,15 +51,25 @@ COPY --from=deps /app/node_modules node_modules
 COPY --from=deps /app/package.json package.json
 COPY --from=deps /app/bun.lock bun.lock
 COPY --from=deps /app/server/node_modules server/node_modules
+COPY --from=deps /app/packages/durable-core/node_modules packages/durable-core/node_modules
 
 COPY server server
+COPY packages/durable-core packages/durable-core
 COPY shared shared
 COPY examples examples
+
+# The API's computer policy imports this shared matcher; it has only Node built-in dependencies.
+COPY agent-computer/src/egress.ts agent-computer/src/egress.ts
 
 # The built app, served by the process below. `APP_DIST_DIR` is what turns that on, so an image
 # without this layer is still a working API.
 COPY --from=app-build /app/app/dist app/dist
 ENV APP_DIST_DIR=/app/app/dist
+
+# COPY preserves a checkout's restrictive umask. Public application sources must be readable by
+# the non-root runtime even when the build context's files are 0600 and directories are 0700.
+RUN chmod -R a+rX /app/server /app/packages /app/shared /app/examples \
+  /app/agent-computer /app/package.json /app/bun.lock
 
 USER openbot:openbot
 

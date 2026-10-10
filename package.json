@@ -7,7 +7,8 @@
   "workspaces": [
     "app",
     "server",
-    "worker"
+    "worker",
+    "packages/durable-core"
   ],
   "scripts": {
     "build": "bun run generate:app-config && bun run --filter '*' build",
@@ -25,7 +26,8 @@
     "test:live-composio": "bun -e \"if (!process.env.COMPOSIO_API_KEY?.trim()) { console.error('COMPOSIO_API_KEY is empty or unset, so every case in this suite would skip and this command would still exit 0. Run it as COMPOSIO_API_KEY=... bun run test:live-composio.'); process.exit(1) }\" && OPENBOT_LIVE_COMPOSIO=1 bun test server/tests/composio-live.test.ts",
     "diagram": "bun scripts/architecture-diagram.ts",
     "composio:smoke": "bun scripts/composio-smoke.ts",
-    "mock:knowledge": "bun scripts/mock-knowledge-mcp.ts"
+    "mock:knowledge": "bun scripts/mock-knowledge-mcp.ts",
+    "test:durable": "bun scripts/test-durable.ts"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.10",

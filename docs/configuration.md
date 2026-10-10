@@ -24,9 +24,11 @@ bash scripts/start.sh
 | `INTELLIGENCE_GATEWAY_WS_URL` | CopilotKit Intelligence realtime gateway URL.                                                         |
 | `INTELLIGENCE_API_KEY`        | Runtime key for the Intelligence project.                                                             |
 
-All five above stop server startup if missing. The three `INTELLIGENCE_` values are additionally
-checked as a set, so a partial set is refused as a misconfiguration rather than treated as
-unconfigured.
+`DATABASE_URL` and `KEY_ENCRYPTION_KEY` are always required. `THREADS_BACKEND` defaults to
+`intelligence`, where the three `INTELLIGENCE_` values are required together. Set `THREADS_BACKEND=local`
+to store threads/runs/history in PostgreSQL without Intelligence credentials or calls. Local mode
+disables Automatic Learning. See [Local durable threads](local-threads.md) for migrations, recovery,
+workers, backups and rollback.
 
 `COPILOTKIT_LICENSE_TOKEN` is optional: managed Intelligence issues no licence token, and a
 self-hosted Intelligence that has one sets this and has it forwarded to the runtime.

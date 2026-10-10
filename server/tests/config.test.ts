@@ -2,9 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { configuredAuthProviders, loadConfig } from "../src/config";
 
-// Intelligence is part of the MINIMUM contract, so it belongs in the base environment every other
-// case builds on. Leaving it out of the base would make most of this file assert the behaviour of a
-// deployment that is not allowed to exist.
+// Intelligence is the default backend; retain its complete contract in the shared fixture.
 const baseEnvironment = {
   DATABASE_URL: "postgres://openbot:openbot@localhost:5432/openbot",
   KEY_ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
@@ -99,9 +97,32 @@ describe("deployment configuration", () => {
     expect(config.auth).toBeUndefined();
   });
 
-  // The product does not have a mode without Intelligence, so each of these is a refusal to boot
-  // rather than a degraded capability. Named individually because a deployment that sets three of
-  // four is the likeliest real mistake, and the message has to say which one is missing.
+  test("explicit local mode starts without Intelligence credentials and ignores its configuration", () => {
+    const environment: Record<string, string | undefined> = {
+      ...baseEnvironment,
+      THREADS_BACKEND: "local",
+    };
+    delete environment.INTELLIGENCE_API_URL;
+    delete environment.INTELLIGENCE_GATEWAY_WS_URL;
+    delete environment.INTELLIGENCE_API_KEY;
+    expect(loadConfig(environment).runtime).toEqual({
+      mode: "local",
+      durableHistory: true,
+    });
+    expect(
+      loadConfig({
+        ...environment,
+        INTELLIGENCE_API_URL: "invalid",
+        INTELLIGENCE_API_KEY: "unused",
+      }).runtime,
+    ).toEqual({ mode: "local", durableHistory: true });
+  });
+  test("unknown thread backend refuses startup even with complete Intelligence credentials", () => {
+    expect(() =>
+      loadConfig({ ...baseEnvironment, THREADS_BACKEND: "unknown" }),
+    ).toThrow("THREADS_BACKEND");
+  });
+  // Default Intelligence configurations fail startup when incomplete; there is no fallback.
   test.each([
     "INTELLIGENCE_API_URL",
     "INTELLIGENCE_GATEWAY_WS_URL",

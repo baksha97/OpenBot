@@ -209,11 +209,11 @@ describe("the self-host banner", () => {
 describe("the capabilities endpoint", () => {
   const config = loadConfig(testEnvironment());
 
-  // createApp takes its services positionally, and the banner is the last of them.
+  // createApp takes its services positionally; the local thread backend follows the banner.
   function appWith(banner: ReturnType<typeof createSelfHostBanner>) {
     const args: unknown[] = new Array(createApp.length).fill(undefined);
     args[0] = config;
-    args[args.length - 1] = banner;
+    args[args.length - 2] = banner;
     return (createApp as (...input: unknown[]) => ReturnType<typeof createApp>)(
       ...args,
     );

@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import {
   IconArrowLeft,
   IconBuildingBank,
@@ -129,6 +131,7 @@ const GROUPS: {
 export function AdminSidebar({
   ...props
 }: React.ComponentProps<typeof Sidebar>) {
+  const { data: capabilities } = useQuery(deploymentCapabilitiesQueryOptions());
   return (
     <Sidebar {...props}>
       {/*
@@ -181,22 +184,28 @@ export function AdminSidebar({
           <SidebarGroup key={group.label}>
             <SidebarGroupLabel>{group.label}</SidebarGroupLabel>
             <SidebarMenu className="gap-px">
-              {group.items.map((item) => (
-                <SidebarMenuItem key={item.title}>
-                  <SidebarMenuButton
-                    render={(props) => (
-                      <Link
-                        {...item.linkOptions}
-                        activeProps={{ className: "bg-foreground/5" }}
-                        {...props}
-                      >
-                        <item.icon className="mr-2 h-4 w-4" />
-                        {item.title}
-                      </Link>
-                    )}
-                  />
-                </SidebarMenuItem>
-              ))}
+              {group.items
+                .filter(
+                  (item) =>
+                    item.title !== "Automatic Learning" ||
+                    capabilities?.learning !== false,
+                )
+                .map((item) => (
+                  <SidebarMenuItem key={item.title}>
+                    <SidebarMenuButton
+                      render={(props) => (
+                        <Link
+                          {...item.linkOptions}
+                          activeProps={{ className: "bg-foreground/5" }}
+                          {...props}
+                        >
+                          <item.icon className="mr-2 h-4 w-4" />
+                          {item.title}
+                        </Link>
+                      )}
+                    />
+                  </SidebarMenuItem>
+                ))}
             </SidebarMenu>
           </SidebarGroup>
         ))}

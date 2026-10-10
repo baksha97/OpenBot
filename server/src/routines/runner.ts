@@ -1,3 +1,4 @@
+import { durableRunId } from "../run-identity";
 /**
  * Running one firing of a routine with nobody's browser open.
  *
@@ -176,6 +177,7 @@ export function createRoutineRunner(options: {
         agentId,
         threadId: channel.threadId,
         instruction,
+        runId: durableRunId(`routine:${routineRunId}`),
       }));
     } catch (error) {
       if (error instanceof HeadlessToolSuspension) {

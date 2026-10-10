@@ -1,3 +1,4 @@
+import type { LocalThreads } from "./local-threads";
 import type { Hono as HonoApp, MiddlewareHandler } from "hono";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
@@ -435,6 +436,7 @@ export function createApp(
    * resolver still answers from `config.selfHostBanner` rather than asking the network.
    */
   selfHostBanner?: SelfHostBanner,
+  localThreads?: LocalThreads,
 ) {
   const app = new Hono<{ Variables: AppVariables }>();
   mountDesktopConnectionFailure(app, desktopHostToken);
@@ -448,6 +450,8 @@ export function createApp(
     context.json({
       mode: config.runtime.mode,
       durableHistory: config.runtime.durableHistory,
+      learning: config.runtime.mode === "intelligence",
+      threadTransport: config.runtime.mode === "local" ? "sse" : "intelligence",
       /*
        * Whether a Bot may answer with an interface it wrote itself.
        *
@@ -1803,14 +1807,38 @@ export function createApp(
       createThreadRoutes(
         threadIdentity,
         requireUser,
-        // config.ts refuses to boot without the full Intelligence contract (see copilot.ts's
-        // header comment), so `config.runtime.intelligence` is never missing here. Built from it
-        // rather than assumed, though: this is the one place besides the runtime mount itself that
-        // needs to reach Intelligence, and it should keep working unmodified if that guarantee ever
-        // loosens and a deployment can legitimately have no reader to build.
-        createThreadReader(
-          createIntelligenceClient(config.runtime.intelligence),
-        ),
+        // The selected backend checks trusted ownership before granting a channel thread mapping.
+        localThreads
+          ? async (threadId, userId) => {
+              try {
+                await localThreads.service.store.get(
+                  localThreads.scope(userId),
+                  threadId,
+                );
+                return "known";
+              } catch (error) {
+                if (
+                  error instanceof Error &&
+                  "code" in error &&
+                  error.code === "not_found"
+                )
+                  return "unknown";
+                throw error;
+              }
+            }
+          : config.runtime.intelligence
+            ? createThreadReader(
+                createIntelligenceClient(config.runtime.intelligence),
+              )
+            : undefined,
+        localThreads
+          ? async (id, userId) => {
+              await localThreads.service.store.create(
+                localThreads.scope(userId),
+                { id, ownerId: userId, agentId: "unassigned" },
+              );
+            }
+          : undefined,
       ),
     );
   }

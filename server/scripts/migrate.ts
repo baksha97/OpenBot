@@ -12,6 +12,7 @@
  * the image, and it keeps the same `drizzle.__drizzle_migrations` journal the CLI does, so the two
  * are interchangeable and a database migrated by either is migrated.
  */
+import { PostgresStore } from "@openbot/durable-core";
 import { join } from "node:path";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { migrate } from "drizzle-orm/postgres-js/migrator";
@@ -36,6 +37,14 @@ try {
   await migrate(drizzle(client), {
     migrationsFolder: join(import.meta.dir, "..", "drizzle"),
   });
+  const durable = new PostgresStore(databaseUrl, async () => {
+    throw new Error("Migration context cannot access threads");
+  });
+  try {
+    await durable.migrate();
+  } finally {
+    await durable.close();
+  }
   console.info(JSON.stringify({ type: "migrations-applied", status: "ok" }));
 } finally {
   // Released whatever happened, so a failure exits rather than hanging on an open socket.

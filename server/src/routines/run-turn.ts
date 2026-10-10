@@ -1,5 +1,11 @@
+import {
+  intelligenceLocks,
+  type LegacyThreadClient,
+} from "../intelligence-compat";
 /**
- * One headless turn, run into the Intelligence thread the person will open.
+ * One headless turn in the configured durable thread backend the person will open.
+ * Local execution uses the scoped backendForOwner adapter. The compatibility details below
+ * describe the retained Intelligence path; its private calls are isolated in intelligence-compat.ts.
  *
  * WRITTEN AGAINST `@copilotkit/runtime` 1.69.0, MIRRORING
  * `node_modules/@copilotkit/runtime/dist/v2/runtime/core/channel-manager.mjs:189-316`
@@ -123,36 +129,7 @@ type ThreadHistoryMessage = {
  * depends on. The real client satisfies it; see the seam note above about the `ɵ` shapes being
  * restatements rather than imports.
  */
-export type IntelligenceLike = {
-  getOrCreateThread(params: {
-    threadId: string;
-    userId: string;
-    agentId: string;
-    learningContainerId?: string;
-  }): Promise<unknown>;
-  getThreadMessages(params: {
-    threadId: string;
-    userId: string;
-  }): Promise<{ messages: ThreadHistoryMessage[] }>;
-  ɵacquireThreadLock(params: {
-    threadId: string;
-    runId: string;
-    userId: string;
-    agentId: string;
-    ttlSeconds?: number;
-    learningContainerId?: string;
-  }): Promise<unknown>;
-  /** NOTE: no `userId` and no `agentId` — renew is identified by the thread and the run alone. */
-  ɵrenewThreadLock(params: {
-    threadId: string;
-    runId: string;
-    ttlSeconds: number;
-  }): Promise<unknown>;
-  ɵcleanupThreadLock(params: {
-    threadId: string;
-    runId: string;
-  }): Promise<void>;
-};
+export type IntelligenceLike = LegacyThreadClient;
 
 /**
  * What we subscribe to. Declared rather than imported as `Observable<BaseEvent>` so a fake is a plain
@@ -277,8 +254,13 @@ export function drawnComponents(messages: Message[]): DrawnComponent[] {
 export { frameFiring };
 
 export function createTurnRunner(options: {
-  intelligence: IntelligenceLike;
-  runner: RunnerLike;
+  intelligence?: IntelligenceLike;
+  runner?: RunnerLike;
+  backendForOwner?: (ownerUserId: string) => {
+    intelligence: IntelligenceLike;
+    runner: RunnerLike;
+    completedMessages?: (threadId: string, runId: string) => Promise<Message[]>;
+  };
   learningContainerForThread?: (input: {
     threadId: string;
     agentId: string;
@@ -311,8 +293,8 @@ export function createTurnRunner(options: {
   abortGraceMs?: number;
 }): TurnRunner {
   const {
-    intelligence,
-    runner,
+    intelligence: configuredIntelligence,
+    runner: configuredRunner,
     buildAgentFor,
     learningContainerForThread,
     toolsForTurn,
@@ -337,6 +319,12 @@ export function createTurnRunner(options: {
     depth,
     onText,
   }) => {
+    const backend = options.backendForOwner?.(ownerUserId);
+    const intelligence = backend?.intelligence ?? configuredIntelligence;
+    const runner = backend?.runner ?? configuredRunner;
+    if (!intelligence || !runner)
+      throw new Error("Headless thread backend is unavailable");
+    const locks = intelligenceLocks(intelligence);
     if (signal?.aborted) throw new Error("The headless turn was cancelled.");
     // Paused Bots do not start; a pause while running aborts this signal. See agents/lifecycle.ts.
     signal = await guardBotTurn({ ownerUserId, agentId, signal });
@@ -417,7 +405,7 @@ export function createTurnRunner(options: {
     const turn =
       userMessage ??
       ({
-        id: crypto.randomUUID(),
+        id: options.backendForOwner ? `input:${runId}` : crypto.randomUUID(),
         role: "user",
         content: frameFiring(instruction),
       } as Message);
@@ -442,9 +430,11 @@ export function createTurnRunner(options: {
      * unreadable.
      */
     const historicIds = new Set(history.messages.map((message) => message.id));
-    const persistedInputMessages = messages.filter(
-      (message) => !historicIds.has(message.id),
-    );
+    const persistedInputMessages = options.backendForOwner
+      ? continuation
+        ? messages.filter((message) => message.id === continuation.messageId)
+        : [turn]
+      : messages.filter((message) => !historicIds.has(message.id));
 
     /*
      * The Bot, resolved as its owner, and pointed at this thread.
@@ -544,7 +534,7 @@ export function createTurnRunner(options: {
         : {}),
     });
 
-    await intelligence.ɵacquireThreadLock({
+    await locks.acquire({
       threadId,
       runId,
       userId: ownerUserId,
@@ -591,8 +581,8 @@ export function createTurnRunner(options: {
     };
 
     heartbeat = setInterval(() => {
-      void intelligence
-        .ɵrenewThreadLock({ threadId, runId, ttlSeconds: lockTtlSeconds })
+      void locks
+        .renew({ threadId, runId, ttlSeconds: lockTtlSeconds })
         .catch((error: unknown) => {
           if (heartbeat === undefined) return;
           /*
@@ -692,9 +682,7 @@ export function createTurnRunner(options: {
       if (deadline !== undefined) clearTimeout(deadline);
       if (backstop !== undefined) clearTimeout(backstop);
       spoken.unsubscribe();
-      await intelligence
-        .ɵcleanupThreadLock({ threadId, runId })
-        .catch(() => undefined);
+      await locks.release({ threadId, runId }).catch(() => undefined);
     }
 
     // Raised after the lock is released, and ahead of any reply: a turn that lost its lock partway
@@ -720,7 +708,9 @@ export function createTurnRunner(options: {
     }
     if (waiting) throw waiting;
 
-    const added = agent.messages.filter((message) => !before.has(message.id));
+    const added = backend?.completedMessages
+      ? await backend.completedMessages(threadId, runId)
+      : agent.messages.filter((message) => !before.has(message.id));
     const said = added
       .map(assistantText)
       .filter((text): text is string => text !== undefined);

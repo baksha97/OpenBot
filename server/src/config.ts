@@ -1,7 +1,6 @@
 /**
- * What the runtime can do. There is exactly one answer because CopilotKit Intelligence is required
- * for durable threads and memory. Configuration the product cannot function without belongs at the
- * boot boundary.
+ * Select the durable thread backend at boot. Intelligence remains the default; local owns
+ * PostgreSQL history without constructing Intelligence clients. Neither mode silently falls back.
  */
 import {
   isLearningContainerId,
@@ -19,9 +18,9 @@ import {
 import { type VoiceConfig, voiceConfig } from "./voice/config";
 
 export type RuntimeCapabilities = {
-  mode: "intelligence";
+  mode: "intelligence" | "local";
   durableHistory: true;
-  intelligence: IntelligenceSettings;
+  intelligence?: IntelligenceSettings;
 };
 
 /**
@@ -892,6 +891,10 @@ function oktaAuth(
  * deployment sets one, which is what a self-hosted Intelligence with its own licence needs.
  */
 function runtimeCapabilities(environment: Environment): RuntimeCapabilities {
+  const backend = optional(environment, "THREADS_BACKEND") ?? "intelligence";
+  if (backend === "local") return { mode: "local", durableHistory: true };
+  if (backend !== "intelligence")
+    throw new Error("THREADS_BACKEND must be local or intelligence");
   const settings = {
     apiUrl: url(environment, "INTELLIGENCE_API_URL"),
     gatewayWsUrl: url(environment, "INTELLIGENCE_GATEWAY_WS_URL"),

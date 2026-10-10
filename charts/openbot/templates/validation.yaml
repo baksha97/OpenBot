@@ -68,7 +68,7 @@ This template renders nothing.
 {{- end }}
 
 {{- /*
-  Intelligence, which is not optional.
+  Validate the selected thread backend; Intelligence remains the default.
 
   The three addressing values are required together and the server refuses to start on a partial
   set, so the same rule is applied here: caught at install with the values named, rather than in a
@@ -77,7 +77,11 @@ This template renders nothing.
   `secrets.licenseToken` is NOT among them. Managed Intelligence issues no licence token, so
   requiring one here would block an install the server would have accepted.
 */}}
-{{- if or (not .Values.config.intelligence.apiUrl) (not .Values.config.intelligence.gatewayWsUrl) }}
+{{- $threadsBackend := .Values.config.threadsBackend | default "intelligence" }}
+{{- if not (has $threadsBackend (list "local" "intelligence")) }}
+{{- fail "config.threadsBackend must be local or intelligence" }}
+{{- end }}
+{{- if and (eq $threadsBackend "intelligence") (or (not .Values.config.intelligence.apiUrl) (not .Values.config.intelligence.gatewayWsUrl)) }}
 {{- fail "OpenBot requires CopilotKit Intelligence. Set config.intelligence.apiUrl and config.intelligence.gatewayWsUrl, and the matching secrets.intelligenceApiKey." }}
 {{- end }}
 

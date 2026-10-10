@@ -9,6 +9,9 @@ import { client } from "@/lib/client";
  * deployment secret stay on the server. See server/src/app.ts.
  */
 export type DeploymentCapabilities = {
+  mode?: "local" | "intelligence";
+  learning?: boolean;
+  threadTransport?: "sse" | "intelligence";
   /**
    * Whether a Bot may answer with an interface it wrote itself.
    *
@@ -60,6 +63,9 @@ export function deploymentCapabilitiesQueryOptions() {
           fallback: "This deployment's capabilities could not be loaded.",
         })
       ).json()) as {
+        mode?: "local" | "intelligence";
+        learning?: boolean;
+        threadTransport?: "sse" | "intelligence";
         generativeUi?: boolean;
         selfHostBanner?: boolean;
         transcription?: boolean;
@@ -67,6 +73,9 @@ export function deploymentCapabilitiesQueryOptions() {
       };
 
       return {
+        mode: body.mode,
+        learning: body.learning ?? body.mode !== "local",
+        threadTransport: body.threadTransport,
         generativeUi: body.generativeUi === true,
         selfHostBanner: body.selfHostBanner === true,
         transcription: body.transcription === true,

@@ -3,6 +3,7 @@
 node_modules
 **/node_modules
 .git
+IMPLEMENTATION_PROGRESS.local.md
 .env
 .env.*
 !.env.example

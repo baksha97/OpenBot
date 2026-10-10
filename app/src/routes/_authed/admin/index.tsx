@@ -1,3 +1,5 @@
+import { useQuery } from "@tanstack/react-query";
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import {
   IconBuildingBank,
   IconChecks,
@@ -163,6 +165,7 @@ const SECTIONS: {
 ];
 
 function RouteComponent() {
+  const { data: capabilities } = useQuery(deploymentCapabilitiesQueryOptions());
   return (
     <PageShell
       description="Settings that apply to everybody in this deployment. Anything here affects every person and every Bot, which is what separates it from your own preferences."
@@ -175,28 +178,36 @@ function RouteComponent() {
           title={section.title}
         >
           <PageRows>
-            {section.items.map((item, index) => (
-              <StaggerItem index={index} key={item.title}>
-                {/*
-                 * The whole row is the link, not a chevron somebody has to aim at: every row here
-                 * goes exactly one place, so there is nothing else the row could mean.
-                 */}
-                <Item
-                  render={(props) => <Link {...item.linkOptions} {...props} />}
-                  size="sm"
-                >
-                  <ItemMedia>
-                    <item.icon className="size-4 text-muted-foreground" />
-                  </ItemMedia>
-                  <ItemContent>
-                    <ItemTitle>{item.title}</ItemTitle>
-                    <ItemDescription>{item.description}</ItemDescription>
-                  </ItemContent>
-                  <IconChevronRight className="size-4 shrink-0 text-muted-foreground" />
-                </Item>
-                {index !== section.items.length - 1 && <Separator />}
-              </StaggerItem>
-            ))}
+            {section.items
+              .filter(
+                (item) =>
+                  item.title !== "Automatic Learning" ||
+                  capabilities?.learning !== false,
+              )
+              .map((item, index) => (
+                <StaggerItem index={index} key={item.title}>
+                  {/*
+                   * The whole row is the link, not a chevron somebody has to aim at: every row here
+                   * goes exactly one place, so there is nothing else the row could mean.
+                   */}
+                  <Item
+                    render={(props) => (
+                      <Link {...item.linkOptions} {...props} />
+                    )}
+                    size="sm"
+                  >
+                    <ItemMedia>
+                      <item.icon className="size-4 text-muted-foreground" />
+                    </ItemMedia>
+                    <ItemContent>
+                      <ItemTitle>{item.title}</ItemTitle>
+                      <ItemDescription>{item.description}</ItemDescription>
+                    </ItemContent>
+                    <IconChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                  </Item>
+                  {index !== section.items.length - 1 && <Separator />}
+                </StaggerItem>
+              ))}
           </PageRows>
         </PageSection>
       ))}

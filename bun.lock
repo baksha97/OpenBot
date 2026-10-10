@@ -63,6 +63,14 @@
         "vite": "^7.1.12",
       },
     },
+    "packages/durable-core": {
+      "name": "@openbot/durable-core",
+      "version": "0.1.0",
+      "dependencies": {
+        "fast-json-patch": "3.1.1",
+        "postgres": "^3.4.9",
+      },
+    },
     "server": {
       "name": "server",
       "version": "0.0.0",
@@ -80,6 +88,7 @@
         "@mastra/client-js": "^1.43.0",
         "@mastra/core": "^1.64.0",
         "@modelcontextprotocol/sdk": "^1.30.0",
+        "@openbot/durable-core": "workspace:*",
         "@opentelemetry/api-logs": "0.221.0",
         "@opentelemetry/exporter-logs-otlp-http": "0.221.0",
         "@opentelemetry/resources": "2.10.0",
@@ -505,6 +514,8 @@
     "@nodelib/fs.stat": ["@nodelib/fs.stat@2.0.5", "", {}, "sha512-RkhPPp2zrqDAQA/2jNhnztcPAlv64XdhIp7a7454A5ovI7Bukxgt7MX7udwAu3zg1DcpPU0rz3VV1SeaqvY4+A=="],
 
     "@nodelib/fs.walk": ["@nodelib/fs.walk@1.2.8", "", { "dependencies": { "@nodelib/fs.scandir": "2.1.5", "fastq": "^1.6.0" } }, "sha512-oGB+UxlgWcgQkgwo8GcEGwemoTFt3FIO9ababBmaGwXIoBKZ+GTy0pP185beGg7Llih/NSHSV2XAs1lnznocSg=="],
+
+    "@openbot/durable-core": ["@openbot/durable-core@workspace:packages/durable-core"],
 
     "@opentelemetry/api": ["@opentelemetry/api@1.9.1", "", {}, "sha512-gLyJlPHPZYdAk1JENA9LeHejZe1Ti77/pTeFm/nMXmQH/HFZlcS/O2XJB+L8fkbrNSqhdtlvjBVjxwUYanNH5Q=="],
 

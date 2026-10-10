@@ -1,3 +1,4 @@
+import { durableRunId } from "../src/run-identity";
 import { describe, expect, test } from "bun:test";
 import type { AgentActor } from "../src/agents/profile-types";
 import type {
@@ -155,6 +156,7 @@ describe("createRoutineRunner", () => {
         agentId: CONTEXT.agentId,
         threadId: CHANNEL.threadId,
         instruction: CONTEXT.instruction,
+        runId: durableRunId(`routine:${RUN_ID}`),
       },
     ]);
     // The count, not merely that one happened: a second record would ring a second unread dot.

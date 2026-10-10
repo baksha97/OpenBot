@@ -11,7 +11,7 @@
  * an answer nothing had recorded, which is the failure nobody can debug: the first Bot says it handed
  * the work over, the second says it answered, and no row anywhere agrees.
  */
-import type { AbstractAgent, BaseEvent } from "@ag-ui/client";
+import type { AbstractAgent, BaseEvent, Message } from "@ag-ui/client";
 import type { Observable } from "rxjs";
 import { headlessTurnRefusal } from "../admin/controls";
 import type { AuditInitiator } from "../audit";
@@ -39,7 +39,11 @@ export type ThreadRunner = {
     input: unknown;
     /** What the conversation keeps, when that is not the whole of what the model was sent. */
     persistedInputMessages?: readonly unknown[];
+    completionIntents?: (
+      messages: readonly Message[],
+    ) => import("@openbot/durable-core").Followup[];
   }) => Observable<BaseEvent>;
+  result?: (threadId: string, runId: string) => Promise<Message[]>;
   /** Stop a run in flight, as a pause does for every other turn. */
   stop?: (input: { threadId: string; runId: string }) => Promise<unknown>;
 };
@@ -104,7 +108,8 @@ export function createHandoffDelivery(options: {
     threadId: string;
     actorId: string;
   }) => Promise<readonly unknown[]>;
-  runner: ThreadRunner;
+  runner?: ThreadRunner;
+  runnerForActor?: (actorId: string) => ThreadRunner;
   lock: ThreadLock;
   /**
    * A fresh thread of the addressed Bot's own, where its working happens out of sight.
@@ -123,6 +128,8 @@ export function createHandoffDelivery(options: {
    * run rather than an unlogged model call.
    */
   mintThreadId: () => string;
+  threadForKey?: (key: string) => string;
+  runForKey?: (key: string) => string;
   /**
    * Tell the roster a conversation moved, when a turn put words in it.
    *
@@ -168,7 +175,7 @@ export function createHandoffDelivery(options: {
   const {
     agentFor,
     history,
-    runner,
+    runner: configuredRunner,
     lock,
     mintThreadId,
     announce,
@@ -178,7 +185,9 @@ export function createHandoffDelivery(options: {
   } = options;
 
   return {
-    async deliver({ work, message, shown, assertion }) {
+    async deliver({ work, message, shown, assertion, deliveryKey }) {
+      const runner = options.runnerForActor?.(work.actorId) ?? configuredRunner;
+      if (!runner) throw new Error("Handoff thread backend is unavailable");
       const agent = await agentFor({
         actorId: work.actorId,
         botId: work.toBotId,
@@ -258,7 +267,12 @@ export function createHandoffDelivery(options: {
        */
       const where: { threadId: string } = work.answerIn
         ? { threadId: work.answerIn }
-        : { threadId: mintThreadId() };
+        : {
+            threadId:
+              deliveryKey && options.threadForKey
+                ? options.threadForKey(deliveryKey)
+                : mintThreadId(),
+          };
 
       /*
        * A forward hop lights the asking channel while it runs, because its own run is in a scratch
@@ -298,7 +312,10 @@ export function createHandoffDelivery(options: {
          */
         const held = await lock.acquire({
           threadId: where.threadId,
-          runId: newRunId(),
+          runId:
+            deliveryKey && options.runForKey
+              ? options.runForKey(deliveryKey)
+              : newRunId(),
           userId: work.actorId,
           agentId: work.toBotId,
         });
@@ -402,6 +419,29 @@ export function createHandoffDelivery(options: {
                * What makes this run legitimate is the lock itself: the gateway compares the run id on
                * every event to the one the lock holds. Taking the lock is the whole of the ceremony.
                */
+              ...(options.runnerForActor && deliveryKey
+                ? {
+                    completionIntents: (outputs: readonly Message[]) => [
+                      {
+                        id: `handoff-result:${deliveryKey}`,
+                        payload: {
+                          kind: "handoff-result",
+                          work,
+                          key: deliveryKey,
+                          answer:
+                            outputs
+                              .filter(
+                                (message) =>
+                                  message.role === "assistant" &&
+                                  typeof message.content === "string",
+                              )
+                              .map((message) => message.content)
+                              .join("\n\n") || null,
+                        },
+                      },
+                    ],
+                  }
+                : {}),
               input: {
                 threadId: where.threadId,
                 runId,
@@ -480,6 +520,24 @@ export function createHandoffDelivery(options: {
        * What came back, for the runner to relay. Null when the turn produced no words at all —
        * a run that only called tools — which the runner treats as nothing worth carrying back.
        */
+      if (runner.result && deliveryKey && options.runForKey) {
+        const outputs = await runner.result(
+          where.threadId,
+          options.runForKey(deliveryKey),
+        );
+        return {
+          answer:
+            outputs
+              .filter(
+                (message) =>
+                  message.role === "assistant" &&
+                  typeof message.content === "string",
+              )
+              .map((message) => message.content)
+              .join("\n\n") || null,
+          durable: true,
+        };
+      }
       return { answer: said.length > 0 ? said.join("\n\n") : null };
     },
   };

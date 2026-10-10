@@ -559,3 +559,10 @@ Helm 3, and `--rollback-on-failure` on Helm 4, which renamed the flag. Helm 4 st
 `--atomic` on `upgrade` as a deprecated alias and prints a warning, so the Helm 3 spelling keeps
 working on both today; it is `helm install --atomic` that Helm 4 removed outright, which is one more
 reason this is written as `upgrade --install`.
+
+### Local thread backend
+
+Set `config.threadsBackend: local` to use the application PostgreSQL database for durable threads.
+The chart omits Intelligence environment/Secret references in this mode. PostgreSQL, encryption and
+authentication requirements remain. All replicas need the same backend and deployment ID. See
+[local durable threads](../../docs/local-threads.md) for migrations, safe interruption, backups and rollback.

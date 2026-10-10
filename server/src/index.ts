@@ -1,10 +1,12 @@
+import { intelligenceRunnerConnection } from "./intelligence-compat";
+import { createDurableFollowupReconciler } from "./durable-followups";
+import { DurableService, PostgresStore } from "@openbot/durable-core";
+import { localThreadPolicy } from "./local-thread-policy";
+import { LocalThreads } from "./local-threads";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { AbstractAgent } from "@ag-ui/client";
-import {
-  CopilotKitIntelligence,
-  IntelligenceAgentRunner,
-} from "@copilotkit/runtime/v2";
+import { IntelligenceAgentRunner } from "@copilotkit/runtime/v2";
 import { serve } from "bun";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -177,10 +179,7 @@ import {
   HostAccessRefusedError,
 } from "./host-access/broker";
 import { hostAccessTools } from "./host-access/tools";
-import {
-  createIntelligenceClient,
-  observeIntelligenceAuthentication,
-} from "./intelligence-client";
+import { createIntelligenceClient } from "./intelligence-client";
 import { clearLearningRevisionFallback } from "./learning/runtime";
 import { createLearningSettingsStore } from "./learning/settings";
 import { createMemoryIngestion } from "./memory/ingestion";
@@ -571,7 +570,7 @@ const approvalService = createApprovalService(
     // Intelligence saves a streaming run's messages a moment behind the stream, and the browser runs
     // the tool as soon as the call arrives. A call that is not saved yet is waited for briefly; one
     // that never appears is refused below.
-    let history = await routineIntelligence.getThreadMessages({
+    let history = await transcriptBackend.getThreadMessages({
       threadId: snapshot.threadId,
       userId: ownerUserId,
     });
@@ -581,7 +580,7 @@ const approvalService = createApprovalService(
         .find((call) => call.id === snapshot.toolCallId);
     for (let attempt = 0; !findCall() && attempt < 10; attempt++) {
       await Bun.sleep(500);
-      history = await routineIntelligence.getThreadMessages({
+      history = await transcriptBackend.getThreadMessages({
         threadId: snapshot.threadId,
         userId: ownerUserId,
       });
@@ -1652,34 +1651,60 @@ const buildAgentFor = async ({
  *
  * Not the runtime's own pair: `mountCopilotRuntime` keeps its client and its runner inside
  * `CopilotRuntime` and hands neither back, and reaching into that object would be a worse seam than
- * building our own from the same three settings. Built from `config.runtime.intelligence`, which is
- * required and not optional — `RuntimeCapabilities` has exactly one mode and every Intelligence field
- * with it (`config.ts:10-22`), and `loadConfig` refuses to boot without them — so there is no
- * not-in-Intelligence-mode branch to write here. If a second mode is ever added, THIS is the line that
- * has to grow a guard, and the routine runner must then be left off `createApp` entirely.
+ * building our own from the same three settings in Intelligence mode. Local mode creates only its
+ * scoped PostgreSQL service and supplies that same service to foreground and headless turns.
  *
  * One runner for the process, reused across firings: it opens a socket per run and holds no idle
  * connection, but its `threads` map is per instance, and a runner per turn would fragment the
  * already-running check that keeps two turns off one thread. See `routines/run-turn.ts`.
  */
-const routineIntelligence = observeIntelligenceAuthentication(
-  new CopilotKitIntelligence({
-    apiUrl: config.runtime.intelligence.apiUrl,
-    wsUrl: config.runtime.intelligence.gatewayWsUrl,
-    apiKey: config.runtime.intelligence.apiKey,
-  }),
-);
-const routineAgentRunner = new IntelligenceAgentRunner({
-  url: routineIntelligence.ɵgetRunnerWsUrl(),
-  authToken: routineIntelligence.ɵgetRunnerAuthToken(),
-});
+const localThreads =
+  config.runtime.mode === "local"
+    ? new LocalThreads(
+        new DurableService(
+          new PostgresStore(
+            config.databaseUrl,
+            localThreadPolicy({
+              tenantId: config.deploymentId ?? tenantPackage.tenantId,
+              database,
+              actorFor,
+              profiles: agentProfileStore,
+              channels: channelStore,
+            }),
+          ),
+        ),
+        config.deploymentId ?? tenantPackage.tenantId,
+      )
+    : undefined;
+if (localThreads) await localThreads.service.store.migrate();
+const routineIntelligence = config.runtime.intelligence
+  ? createIntelligenceClient(config.runtime.intelligence)
+  : undefined;
+const routineAgentRunner = routineIntelligence
+  ? new IntelligenceAgentRunner(
+      intelligenceRunnerConnection(routineIntelligence),
+    )
+  : undefined;
+const headlessBackend = localThreads
+  ? { backendForOwner: (owner: string) => localThreads.headless(owner) }
+  : { intelligence: routineIntelligence, runner: routineAgentRunner };
+const transcriptBackend = {
+  getThreadMessages: (input: { threadId: string; userId: string }) => {
+    if (localThreads)
+      return localThreads.history(
+        localThreads.scope(input.userId),
+        input.threadId,
+      );
+    if (!routineIntelligence) throw new Error("Thread backend is unavailable");
+    return routineIntelligence.getThreadMessages(input);
+  },
+};
 
 const routineRunner = createRoutineRunner({
   routineStore,
   channelStore,
   runTurn: createTurnRunner({
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    ...headlessBackend,
     components: { store: componentStore, auditStore: bootAuditStore },
     buildAgentFor,
     toolsForTurn: async ({ ownerUserId, agentId, initiator }) => {
@@ -1753,6 +1778,7 @@ const copilotRuntime = mountCopilotRuntime(
       void channelStore.signalBusy(input.threadId, input.busy).catch(() => {});
     },
     learningSettings,
+    localThreads,
   },
 );
 
@@ -1774,8 +1800,7 @@ const responsibilityEngine: ResponsibilityEngine = createResponsibilityEngine({
       responsibilityRunId: context.runId,
     });
     const runner = createTurnRunner({
-      intelligence: routineIntelligence,
-      runner: routineAgentRunner,
+      ...headlessBackend,
       components: { store: componentStore, auditStore: bootAuditStore },
       buildAgentFor: (input) => buildAgentFor({ ...input, initiator }),
       toolsForTurn: async () => {
@@ -1890,8 +1915,7 @@ const responsibilityAnswerTurn = ({
     ...(responsibilityRunId ? { responsibilityRunId } : {}),
   });
   return createTurnRunner({
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    ...headlessBackend,
     components: { store: componentStore, auditStore: bootAuditStore },
     buildAgentFor: (input) => buildAgentFor({ ...input, initiator }),
     toolsForTurn: async () => [
@@ -1984,8 +2008,7 @@ const executeApprovedAction = createApprovedActionExecutor({
   personInitiator: PERSON_INITIATOR,
 });
 const approvalContinuationRunner = createTurnRunner({
-  intelligence: routineIntelligence,
-  runner: routineAgentRunner,
+  ...headlessBackend,
   components: { store: componentStore, auditStore: bootAuditStore },
   buildAgentFor,
   toolsForTurn: async ({ ownerUserId, agentId, initiator }) =>
@@ -2285,8 +2308,7 @@ const proactiveEngine = createProactiveEngine({
   queue: createWorkQueue(database),
   owner: workOwner("proactive"),
   runTurn: createTurnRunner({
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    ...headlessBackend,
     buildAgentFor,
     // Only the run's own two tools and refusals: no computer, no components.
     toolsForTurn: (input) => proactiveEngine.toolsForTurn(input),
@@ -2358,8 +2380,7 @@ const wakeUpRunner = createWakeUpRunner({
   actorFor,
   channels: channelStore,
   runTurn: createTurnRunner({
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    ...headlessBackend,
     components: { store: componentStore, auditStore: bootAuditStore },
     buildAgentFor,
     toolsForTurn: async ({ ownerUserId, agentId, initiator }) => {
@@ -2439,8 +2460,7 @@ const groupConversations = createGroupConversations({
     return bots;
   },
   runTurn: createTurnRunner({
-    intelligence: routineIntelligence,
-    runner: routineAgentRunner,
+    ...headlessBackend,
     components: { store: componentStore, auditStore: bootAuditStore },
     buildAgentFor,
     toolsForTurn: async ({ ownerUserId, agentId, initiator }) => {
@@ -2625,8 +2645,9 @@ const personResponseSweep = repeatAfterEach(async () => {
 let workOfferedListener: WorkOfferedListener | undefined;
 
 if (config.handoff.maxDepth > 0 && config.handoff.maxPerRun > 0) {
+  const handoffQueue = createWorkQueue(database);
   const runner = createHandoffRunner({
-    queue: createWorkQueue(database),
+    queue: handoffQueue,
     owner: workOwner("handoff"),
     auditStore: bootAuditStore,
     /*
@@ -2666,6 +2687,17 @@ if (config.handoff.maxDepth > 0 && config.handoff.maxPerRun > 0) {
        * identity, like every thread this deployment starts.
        */
       mintThreadId: () => threadIdentity.mint(),
+      ...(localThreads
+        ? {
+            threadForKey: (key: string) => {
+              const hex = createHash("sha256")
+                .update(`handoff:${key}`)
+                .digest("hex");
+              return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-8${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+            },
+            runForKey: (key: string) => `handoff:${key}`,
+          }
+        : {}),
       /*
        * The roster, told that a relayed answer landed. The delivery knows only the thread it ran
        * in; this resolves which channel shows that thread — a scratch thread maps to nothing and
@@ -2697,15 +2729,22 @@ if (config.handoff.maxDepth > 0 && config.handoff.maxPerRun > 0) {
       // The same address and the same token the runtime uses. Assembling either from configuration
       // produced a runner every join was refused for, because the thread's active run is a lock the
       // platform issues rather than something an API key can claim.
-      runner: new IntelligenceAgentRunner(
-        copilotRuntime.runnerConnection(),
-      ) as never,
+      runner: routineAgentRunner as never,
+      runnerForActor: localThreads
+        ? (actorId: string) =>
+            localThreads.runner(localThreads.scope(actorId)) as never
+        : undefined,
     }),
   });
 
+  const reconcile = localThreads
+    ? createDurableFollowupReconciler(localThreads, handoffQueue)
+    : async () => {};
   const sweep = async () => {
     try {
+      await reconcile();
       const report = await runner.sweep();
+      await reconcile();
       if (report.delivered.length > 0 || report.skipped.length > 0) {
         console.info(JSON.stringify({ type: "bot-handoff", ...report }));
       }
@@ -2807,7 +2846,7 @@ repeatAfterEach(
 const channelSummaries = {
   database,
   queue: createWorkQueue(database),
-  transcript: routineIntelligence,
+  transcript: transcriptBackend,
   title: createChannelTitler({
     model: runtimeModel.defaultModel,
     resolveApiKey: resolveRuntimeModelApiKey,
@@ -2864,9 +2903,9 @@ auditRoutineStore(routineStore, bootAuditStore);
 
 // Asked only whether this deployment pays for Intelligence, for the self-host banner. Its own client
 // rather than the runtime's, the same as the thread reader: the constructor opens nothing.
-const selfHostBannerIntelligence = createIntelligenceClient(
-  config.runtime.intelligence,
-);
+const selfHostBannerIntelligence = config.runtime.intelligence
+  ? createIntelligenceClient(config.runtime.intelligence)
+  : undefined;
 
 const app = createApp(
   config,
@@ -2987,11 +3026,13 @@ const app = createApp(
     }),
     channels: channelStore,
   },
-  {
-    store: learningSettings,
-    status: copilotRuntime.learning?.status,
-    inspect: copilotRuntime.learning?.inspect,
-  },
+  config.runtime.mode === "intelligence"
+    ? {
+        store: learningSettings,
+        status: copilotRuntime.learning?.status,
+        inspect: copilotRuntime.learning?.inspect,
+      }
+    : undefined,
   {
     approvals: approvalService,
     shared: { modes: accountModes, use: sharedUseStore },
@@ -3008,7 +3049,7 @@ const app = createApp(
         listConversations: async (owner, cursor) =>
           channelStore.list(await actorFor(owner), { cursor, limit: 100 }),
         history: (scope) =>
-          routineIntelligence.getThreadMessages({
+          transcriptBackend.getThreadMessages({
             threadId: scope.threadId,
             userId: scope.ownerUserId,
           }),
@@ -3048,10 +3089,13 @@ const app = createApp(
       auditStore: bootAuditStore,
     },
   },
-  createSelfHostBanner({
-    enabled: config.selfHostBanner,
-    entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
-  }),
+  selfHostBannerIntelligence
+    ? createSelfHostBanner({
+        enabled: config.selfHostBanner,
+        entitlements: () => selfHostBannerIntelligence.getRuntimeEntitlements(),
+      })
+    : { shown: async () => config.selfHostBanner },
+  localThreads,
 );
 
 /**

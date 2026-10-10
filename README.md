@@ -42,6 +42,10 @@ your own machine.
 > In the meantime, run all of it on your laptop, Intelligence included: CopilotKit's free Developer plan
 > covers [running Intelligence locally](#intelligence-on-your-own-machine) in Docker on a Mac.
 
+Local PostgreSQL thread storage is available with `THREADS_BACKEND=local`, without Intelligence
+credentials. The unset default remains Intelligence. See [local durable threads](docs/local-threads.md)
+for setup, recovery and feature limits.
+
 ## What it is
 
 An agent platform that runs inside your own infrastructure. Docker Compose brings up every part of it, the data sits in your PostgreSQL, and the model is yours to choose: no model ships in the box, and an administrator supplies the credential, which is encrypted at rest and never logged.

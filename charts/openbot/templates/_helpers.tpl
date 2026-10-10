@@ -327,6 +327,9 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
   value: {{ $maxDepth | quote }}
 - name: BOT_HANDOFF_MAX_PER_RUN
   value: {{ $maxPerRun | quote }}
+- name: THREADS_BACKEND
+  value: {{ .Values.config.threadsBackend | default "intelligence" | quote }}
+{{- if eq (.Values.config.threadsBackend | default "intelligence") "intelligence" }}
 {{- $learning := .Values.config.learning | default dict }}
 {{- with $learning.containerId }}
 - name: CPK_INTELLIGENCE_LEARNING_CONTAINER_ID
@@ -351,6 +354,7 @@ and in whatever holds the release, which is not where `KEY_ENCRYPTION_KEY` belon
     secretKeyRef:
       name: {{ include "openbot.secretName" . }}
       key: license-token
+{{- end }}
 {{- end }}
 {{- with .Values.config.managedAgent.url }}
 - name: MANAGED_AGENT_AG_UI_URL

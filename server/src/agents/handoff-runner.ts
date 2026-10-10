@@ -80,7 +80,8 @@ export type HandoffDelivery = {
     shown?: string;
     /** The signed statement of the run it is starting, carrying its depth. */
     assertion: string;
-  }) => Promise<{ answer: string | null }>;
+    deliveryKey?: string;
+  }) => Promise<{ answer: string | null; durable?: boolean }>;
 };
 
 export type HandoffRunReport = {
@@ -165,24 +166,7 @@ export function createHandoffRunner(options: {
    * the relay's whole context window repeating it.
    */
   const relay = (work: HandoffWork, key: string, answer: string) =>
-    queue.offer({
-      kind: HANDOFF_KIND,
-      // Outside the run's fan-out prefix and keyed on the hop, for the same two reasons as the
-      // notice below: a relay is not a Bot this run asked for, and one run may legally ask the
-      // same Bot two different things.
-      key: `relay:${key}`,
-      payload: {
-        fromBotId: work.toBotId,
-        toBotId: work.fromBotId,
-        actorId: work.actorId,
-        threadId: work.threadId,
-        runId: work.runId,
-        depth: work.depth,
-        ...(work.initiator ? { initiator: work.initiator } : {}),
-        answerIn: work.threadId,
-        task: `You asked ${work.toName ?? work.toBotId} to help with this: ${work.task}\n\nIt answered:\n\n${clip(answer)}\n\nGive the person the outcome. Keep what matters, drop the pleasantries, and say it came from ${work.toName ?? work.toBotId}.`,
-      } as unknown as Record<string, unknown>,
-    });
+    queue.offer(handoffRelayOffer(work, key, answer));
 
   const tell = (work: HandoffWork, key: string, reason: string) =>
     queue.offer({
@@ -366,11 +350,12 @@ export function createHandoffRunner(options: {
 
           try {
             const shown = summarise(work);
-            const { answer } = await delivery.deliver({
+            const { answer, durable } = await delivery.deliver({
               work,
               message: attribute(work),
               ...(shown ? { shown } : {}),
               assertion: sign(work, { key: item.key, owner }),
+              deliveryKey: item.key,
             });
             const kept = await queue.finish({
               kind: HANDOFF_KIND,
@@ -415,7 +400,7 @@ export function createHandoffRunner(options: {
              * ever. Only for a forward hop with words to carry — a relay of a relay is the loop the
              * `answerIn` check exists to stop, and a wordless turn has nothing to say.
              */
-            if (!work.answerIn && answer) {
+            if (!durable && !work.answerIn && answer) {
               await relay(work, item.key, answer).catch((failure) => {
                 // The turn happened and is on record; a relay that cannot be queued must not undo
                 // that by failing the hop into a retry and a second turn.
@@ -606,4 +591,27 @@ function summarise(work: HandoffWork): string | null {
    */
   if (work.answerIn) return null;
   return `${work.fromName ?? work.fromBotId} asked ${work.toName ?? work.toBotId} for this on your behalf: ${work.task}`;
+}
+
+/** Same stable relay identity for immediate delivery and durable-intent reconciliation. */
+export function handoffRelayOffer(
+  work: HandoffWork,
+  key: string,
+  answer: string,
+) {
+  return {
+    kind: HANDOFF_KIND,
+    key: `relay:${key}`,
+    payload: {
+      fromBotId: work.toBotId,
+      toBotId: work.fromBotId,
+      actorId: work.actorId,
+      threadId: work.threadId,
+      runId: work.runId,
+      depth: work.depth,
+      ...(work.initiator ? { initiator: work.initiator } : {}),
+      answerIn: work.threadId,
+      task: `You asked ${work.toName ?? work.toBotId} to help with this: ${work.task}\n\nIt answered:\n\n${clip(answer)}\n\nGive the person the outcome. Keep what matters, drop the pleasantries, and say it came from ${work.toName ?? work.toBotId}.`,
+    } as Record<string, unknown>,
+  };
 }

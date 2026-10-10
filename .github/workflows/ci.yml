@@ -176,6 +176,20 @@ jobs:
       # question: every secret key a container demands has to be one the chart actually writes.
       # Getting that wrong is invisible until a pod starts, and every shipped target had it wrong.
       - run: bun scripts/check-rendered-chart.ts rendered.yaml
+      - name: Local backend renders without Intelligence credentials
+        run: |
+          helm template local charts/openbot \
+            --set config.threadsBackend=local \
+            --set-string database.url=postgres://render:render@postgres/openbot \
+            --set config.singleUser=true \
+            --set-string secrets.computerToken=render-test \
+            --set-string secrets.keyEncryptionKey="$(openssl rand -base64 32)" \
+            > local-rendered.yaml
+          bun scripts/check-rendered-chart.ts local-rendered.yaml
+          if grep -qE 'name: INTELLIGENCE_|key: intelligence-api-key' local-rendered.yaml; then
+            echo "::error::Local backend requires Intelligence credentials."
+            exit 1
+          fi
       # And that the refusals are load-bearing rather than decorative. A chart full of `fail`
       # messages nothing ever triggers is a chart that has never been shown to refuse anything, and
       # every one of these describes a state that shipped in a values file at some point.
@@ -276,6 +290,8 @@ jobs:
     env:
       DATABASE_URL: postgres://openbot:openbot@localhost:5432/openbot_test
       TEST_DATABASE_URL: postgres://openbot:openbot@localhost:5432/openbot_test
+      OPENBOT_DURABLE_TEST_DATABASE_URL: postgres://openbot:openbot@localhost:5432/openbot_test
+      COPILOTKIT_TELEMETRY_DISABLED: "true"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

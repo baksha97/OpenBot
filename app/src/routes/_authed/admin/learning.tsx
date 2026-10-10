@@ -1,3 +1,4 @@
+import { deploymentCapabilitiesQueryOptions } from "@/lib/deployment/queries";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useId, useState } from "react";
@@ -74,6 +75,28 @@ function TargetFields({
 }
 
 export function LearningPage() {
+  const { data: capabilities, isPending } = useQuery(
+    deploymentCapabilitiesQueryOptions(),
+  );
+  if (isPending)
+    return (
+      <PageShell title="Automatic Learning">
+        <p role="status">Loading deployment capabilities…</p>
+      </PageShell>
+    );
+  if (capabilities?.learning === false)
+    return (
+      <PageShell
+        title="Automatic Learning"
+        description="Automatic Learning requires the Intelligence backend."
+      >
+        <p>Learning is unavailable on this deployment.</p>
+      </PageShell>
+    );
+  return <ConfiguredLearningPage />;
+}
+
+function ConfiguredLearningPage() {
   const queryClient = useQueryClient();
   const settingsQuery = useQuery(learningSettingsQueryOptions());
   const agents = useQuery(agentListQueryOptions());

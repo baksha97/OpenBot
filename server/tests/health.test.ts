@@ -42,6 +42,8 @@ describe("runtime capabilities", () => {
     await expect(response.json()).resolves.toEqual({
       mode: "intelligence",
       durableHistory: true,
+      learning: true,
+      threadTransport: "intelligence",
       // Default-on. The browser reads this to decide whether to offer the tool that generates an
       // interface, so it has to be here and not only in the runtime.
       generativeUi: true,
@@ -71,6 +73,8 @@ describe("runtime capabilities", () => {
     expect(Object.keys(parsed)).toEqual([
       "mode",
       "durableHistory",
+      "learning",
+      "threadTransport",
       "generativeUi",
       "selfHostBanner",
       "transcription",
