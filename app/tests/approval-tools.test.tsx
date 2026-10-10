@@ -1,3 +1,4 @@
+// biome-ignore-all lint/correctness/useHookAtTopLevel: The mock choice stays fixed for each test tree; other files receive the original hooks.
 import { afterAll, afterEach, beforeAll, expect, mock, test } from "bun:test";
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -15,15 +16,22 @@ import { cleanup, render } from "@testing-library/react";
  */
 
 const real = await import("@copilotkit/react-core/v2");
+const useRealCopilotKit = real.useCopilotKit;
+const useRealFrontendTool = real.useFrontendTool;
 type Registered = Parameters<typeof real.useFrontendTool>[0];
 const registered: Registered[] = [];
 const stopped: unknown[] = [];
+let fixtureActive = false;
 mock.module("@copilotkit/react-core/v2", () => ({
   ...real,
-  useCopilotKit: () => ({
-    copilotkit: { stopAgent: (input: unknown) => stopped.push(input) },
-  }),
+  useCopilotKit: () =>
+    fixtureActive
+      ? {
+          copilotkit: { stopAgent: (input: unknown) => stopped.push(input) },
+        }
+      : useRealCopilotKit(),
   useFrontendTool: (tool: Registered) => {
+    if (!fixtureActive) return useRealFrontendTool(tool);
     if (!registered.some((entry) => entry.name === tool.name))
       registered.push(tool);
   },
@@ -31,9 +39,15 @@ mock.module("@copilotkit/react-core/v2", () => ({
 const { useFrontendTool } = await import("@/lib/copilot/approval-tools");
 const { observeApprovalAgent } = await import("@/lib/copilot/approval-context");
 
-beforeAll(() => GlobalRegistrator.register());
+beforeAll(() => {
+  fixtureActive = true;
+  GlobalRegistrator.register();
+});
 afterEach(cleanup);
-afterAll(() => GlobalRegistrator.unregister());
+afterAll(() => {
+  fixtureActive = false;
+  GlobalRegistrator.unregister();
+});
 
 const direct: unknown[] = [];
 function Tools() {
