@@ -552,6 +552,54 @@ test("unknown computer tool calls become error results rather than commands", as
   );
 });
 
+test("computer tools the caller offers are left to the caller, beside a server-executed grant", async () => {
+  const remote = remoteTurn((input) =>
+    lifecycle(
+      input,
+      toolCall("computer_navigate", '{"url":"https://example.com"}'),
+    ),
+  );
+  let executions = 0;
+  remote.agent.use(
+    new headless.HeadlessToolsMiddleware([
+      {
+        definition: {
+          name: "lookup_record",
+          description: "A server-executed grant",
+          parameters: { type: "object", properties: {} },
+        },
+        execute: async () => {
+          executions += 1;
+          return "Local";
+        },
+      },
+    ]),
+  );
+  const events: BaseEvent[] = [];
+  await remote.agent.runAgent(
+    {
+      tools: [
+        {
+          name: "computer_navigate",
+          description: "Open a web page",
+          parameters: { type: "object", properties: {} },
+        },
+      ],
+    },
+    { onEvent: ({ event }) => void events.push(event) },
+  );
+  expect(executions).toBe(0);
+  expect(remote.requests).toHaveLength(1);
+  expect(remote.requests[0]?.tools.map((tool) => tool.name).sort()).toEqual([
+    "computer_navigate",
+    "lookup_record",
+  ]);
+  expect(
+    events.filter((event) => event.type === EventType.TOOL_CALL_RESULT),
+  ).toHaveLength(0);
+  expect(events.at(-1)?.type).toBe(EventType.RUN_FINISHED);
+});
+
 test("human help creates a durable suspension, persists the waiting event, and releases the thread lock", async () => {
   const { gateway, audit } = computerHarness();
   const remote = remoteTurn((input) =>

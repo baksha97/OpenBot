@@ -84,6 +84,12 @@ export class HeadlessToolsMiddleware extends Middleware {
       const tools = new Map(
         this.tools.map((tool) => [tool.definition.name, tool]),
       );
+      // Tools the caller executes itself, such as the browser's computer tools in a person's turn.
+      const offered = new Set(
+        originalInput.tools
+          .map((tool) => tool.name)
+          .filter((name) => !tools.has(name)),
+      );
       const executed = new Set<string>();
       let subscription: Subscription | undefined;
       let started = false;
@@ -169,10 +175,17 @@ export class HeadlessToolsMiddleware extends Middleware {
                 )
               : [],
           );
+          /*
+           * A computer tool nobody here or at the caller executes is refused rather than left
+           * unanswered. One the caller offered is left to the caller: in a person's turn the browser
+           * runs the computer tools, and refusing them here broke browsing for any Bot that also
+           * held a server-executed grant.
+           */
           const owned = pending.filter(
             (call) =>
               tools.has(call.function.name) ||
-              call.function.name.startsWith("computer_"),
+              (call.function.name.startsWith("computer_") &&
+                !offered.has(call.function.name)),
           );
           if (owned.length === 0) {
             subscriber.next(terminal);
