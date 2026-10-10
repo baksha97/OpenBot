@@ -2,7 +2,7 @@ import { intelligenceRunnerConnection } from "./intelligence-compat";
 import { createDurableFollowupReconciler } from "./durable-followups";
 import { DurableService, PostgresStore } from "@openbot/durable-core";
 import { localThreadPolicy } from "./local-thread-policy";
-import { LocalThreads } from "./local-threads";
+import { holdLocalAgentStream, LocalThreads } from "./local-threads";
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 import type { AbstractAgent } from "@ag-ui/client";
@@ -3150,6 +3150,7 @@ serve<SocketData>({
     }
     if (url.pathname === "/api/voice/calls") server.timeout(request, 30);
     if (url.pathname === "/api/voice/sessions") server.timeout(request, 30);
+    if (localThreads) holdLocalAgentStream(request, server);
     const streamBotId = streamPathBotId(url.pathname);
     if (
       streamBotId !== null &&

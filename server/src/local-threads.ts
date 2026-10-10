@@ -23,6 +23,34 @@ import {
 import { Observable, concatMap, from, map, tap, finalize } from "rxjs";
 import { sanitizeSeededHistory } from "./agents/history-sanitize";
 
+/** The AG-UI routes answered with a durable SSE stream that lasts as long as its run. */
+export const LOCAL_AGENT_STREAM_PATH = /\/agent\/[^/]+\/(run|connect)$/;
+
+/**
+ * Exempt a local run or connect stream from `Bun.serve`'s idle timeout.
+ *
+ * Bun closes a connection that has received nothing for its idle timeout (10 seconds by default),
+ * and writing a response does not reset that clock. A model that takes longer than that to answer
+ * lost the browser's stream after RUN_STARTED: the run still committed, but the reply only appeared
+ * after a reload. The stream ends with its run, or when the client disconnects.
+ */
+export function holdLocalAgentStream(
+  request: Request,
+  server: { timeout(request: Request, seconds: number): void },
+  basePath = "/api/copilotkit",
+) {
+  const { pathname } = new URL(request.url);
+  if (
+    pathname.startsWith(`${basePath}/`) &&
+    LOCAL_AGENT_STREAM_PATH.test(pathname)
+  )
+    server.timeout(request, 0);
+}
+
+function missingThread(error: unknown) {
+  return error instanceof DurableError && error.code === "not_found";
+}
+
 /** App facade: authentication supplies scope; the core's policy checks ownership/membership. */
 export class LocalThreads {
   constructor(
@@ -178,11 +206,23 @@ export class LocalThreads {
             ),
             hasMore: false,
           });
+        /*
+         * A channel's thread id exists before its first run creates the durable thread, and the app
+         * reads its history as soon as the channel opens. Intelligence mode answers that read with
+         * an empty history (`historyOrEmpty`), and so does this; only a missing thread qualifies,
+         * so an unauthorized read of an existing one is still refused.
+         */
+        if (match[2] === "messages") {
+          try {
+            return Response.json({
+              messages: (await store.snapshot(scope, threadId)).messages,
+            });
+          } catch (error) {
+            if (missingThread(error)) return Response.json({ messages: [] });
+            throw error;
+          }
+        }
         const thread = await store.get(scope, threadId);
-        if (match[2] === "messages")
-          return Response.json({
-            messages: (await store.snapshot(scope, threadId)).messages,
-          });
         if (match[2] === "state")
           return Response.json({
             state: (await store.snapshot(scope, threadId)).thread.state,
@@ -281,6 +321,7 @@ export class LocalAgentRunner extends AgentRunner {
     runId?: string;
     after?: number;
     snapshot?: boolean;
+    empty?: boolean;
   }) => void;
   private captureReject!: (error: unknown) => void;
   private readonly captured = new Promise<{
@@ -288,6 +329,7 @@ export class LocalAgentRunner extends AgentRunner {
     runId?: string;
     after?: number;
     snapshot?: boolean;
+    empty?: boolean;
   }>((resolve, reject) => {
     this.captureResolve = resolve;
     this.captureReject = reject;
@@ -305,6 +347,15 @@ export class LocalAgentRunner extends AgentRunner {
   async response(signal: AbortSignal): Promise<Response> {
     try {
       const captured = await this.captured;
+      // Connecting to a thread whose first run has not started: nothing to replay, as the SDK's
+      // own runner answers for a thread it has never seen.
+      if (captured.empty)
+        return new Response("", {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+          },
+        });
       const detach = new AbortController();
       const abort = () => detach.abort();
       signal.addEventListener("abort", abort, { once: true });
@@ -528,7 +579,14 @@ export class LocalAgentRunner extends AgentRunner {
       const detach = new AbortController();
       void (async () => {
         if (this.http) {
-          await this.backend.service.store.get(this.scope, request.threadId);
+          try {
+            await this.backend.service.store.get(this.scope, request.threadId);
+          } catch (error) {
+            if (!missingThread(error)) throw error;
+            this.captureResolve({ threadId: request.threadId, empty: true });
+            subscriber.complete();
+            return;
+          }
           this.captureResolve({
             threadId: request.threadId,
             snapshot: true,

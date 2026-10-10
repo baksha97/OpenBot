@@ -3,7 +3,7 @@ import {
   intelligenceRunnerConnection,
 } from "./intelligence-compat";
 import { Hono } from "hono";
-import type { LocalThreads } from "./local-threads";
+import { LOCAL_AGENT_STREAM_PATH, type LocalThreads } from "./local-threads";
 import type { BaseEvent, Message, RunAgentInput } from "@ag-ui/client";
 import { AbstractAgent, HttpAgent } from "@ag-ui/client";
 import type { BuiltInAgentConfiguration } from "@copilotkit/runtime/v2";
@@ -2098,7 +2098,7 @@ export function mountCopilotRuntime(
       const response = await backend.http(scope, request, basePath);
       if (response) return response;
       const cursor = request.headers.get("Last-Event-ID");
-      const streaming = /\/agent\/[^/]+\/(run|connect)$/.test(
+      const streaming = LOCAL_AGENT_STREAM_PATH.test(
         new URL(request.url).pathname,
       );
       const runner = backend.runner(

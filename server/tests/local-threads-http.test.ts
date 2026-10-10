@@ -8,7 +8,7 @@ import {
 import { Hono } from "hono";
 import { loadConfig } from "../src/config";
 import { mountCopilotRuntime } from "../src/copilot";
-import { LocalThreads } from "../src/local-threads";
+import { holdLocalAgentStream, LocalThreads } from "../src/local-threads";
 
 const url = process.env.OPENBOT_DURABLE_TEST_DATABASE_URL;
 (url ? describe : describe.skip)(
@@ -116,6 +116,45 @@ const url = process.env.OPENBOT_DURABLE_TEST_DATABASE_URL;
               `data: ${JSON.stringify({ type: "RUN_STARTED", threadId: input.threadId, runId: input.runId })}\n\n`,
               { headers: { "content-type": "text/event-stream" } },
             );
+          if (content === "quiet") {
+            // Says nothing for longer than the API server's idle timeout, as a slow model does.
+            return new Response(
+              new ReadableStream({
+                async start(controller) {
+                  const emit = (event: unknown) =>
+                    controller.enqueue(
+                      new TextEncoder().encode(
+                        `data: ${JSON.stringify(event)}\n\n`,
+                      ),
+                    );
+                  emit({
+                    type: "RUN_STARTED",
+                    threadId: input.threadId,
+                    runId: input.runId,
+                  });
+                  await Bun.sleep(3_500);
+                  emit({
+                    type: "TEXT_MESSAGE_START",
+                    messageId,
+                    role: "assistant",
+                  });
+                  emit({
+                    type: "TEXT_MESSAGE_CONTENT",
+                    messageId,
+                    delta: "quiet answer",
+                  });
+                  emit({ type: "TEXT_MESSAGE_END", messageId });
+                  emit({
+                    type: "RUN_FINISHED",
+                    threadId: input.threadId,
+                    runId: input.runId,
+                  });
+                  controller.close();
+                },
+              }),
+              { headers: { "content-type": "text/event-stream" } },
+            );
+          }
           if (content === "slow") {
             let timer: ReturnType<typeof setTimeout>;
             return new Response(
@@ -423,5 +462,54 @@ const url = process.env.OPENBOT_DURABLE_TEST_DATABASE_URL;
         store.append = original;
       }
     });
+    test("a channel's thread opens empty before its first run", async () => {
+      const fresh = crypto.randomUUID();
+      const opened = await request("/agent/bot/connect", {
+        ...input(crypto.randomUUID(), ""),
+        threadId: fresh,
+        messages: [],
+      });
+      expect(opened.status).toBe(200);
+      expect(opened.headers.get("content-type")).toContain("text/event-stream");
+      expect(await opened.text()).not.toContain("RUN_ERROR");
+      const empty = await request(`/threads/${fresh}/messages?agentId=bot`);
+      expect(empty.status).toBe(200);
+      expect((await empty.json()).messages).toEqual([]);
+    });
+    test("a quiet Bot's reply outlasts the server's idle timeout", async () => {
+      // The Bot is silent for longer than this server's idle timeout after RUN_STARTED.
+      const handler = app();
+      const strict = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        idleTimeout: 2,
+        fetch: (request, server) => {
+          holdLocalAgentStream(request, server);
+          return handler.fetch(request);
+        },
+      });
+      try {
+        const stream = await (
+          await fetch(
+            `http://127.0.0.1:${strict.port}/api/copilotkit/agent/bot/run`,
+            {
+              method: "POST",
+              headers: {
+                "x-test-session": "alice",
+                "content-type": "application/json",
+              },
+              body: JSON.stringify({
+                ...input(crypto.randomUUID(), "quiet"),
+                threadId: crypto.randomUUID(),
+              }),
+            },
+          )
+        ).text();
+        expect(stream).toContain("quiet answer");
+        expect(stream).toContain("RUN_FINISHED");
+      } finally {
+        strict.stop(true);
+      }
+    }, 15_000);
   },
 );
